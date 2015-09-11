@@ -421,7 +421,7 @@ local function flyd_new_notify_cb(req)
 	return flyd_process_update(flight, json)
 end
 
-local function flyd_get(req, locale)
+local function flyd_get(req, req_str, locale)
 	local func = 'flyd_get'
 
 	assert(#req == 6, 'this function take 6 args')
@@ -429,24 +429,23 @@ local function flyd_get(req, locale)
 	local reservation_id = table.remove(req, 1)
 	local ok, correspond_req = pcall(query.get, query, req)
 	if not ok then
-		log.warn("%s: query:get{%s, %s, %s, %s, %s} failed: %s", func, tostring(req[1]), tostring(req[2]),
-			 tostring(req[3]), tostring(req[4]), tostring(req[5]), correspond_req)
+		log.error("%s: query `%s' failed: %s", func, req_str, correspond_req)
 		return nil
 	elseif not correspond_req then
-		log.warn("%s: query:get{%s, %u, %u, %u, %u}: query not found", func, unpack(req))
+		log.error("%s: query `%s' not found", func, req_str)
 		return nil
 	elseif correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.ACTIVE then
-		log.warn("%s: query:get{%s, %u, %u, %u, %u}: query is in progress", func, unpack(req))
+		log.error("%s: query `%s' is in progress", func, req_str)
 		return nil
 	elseif correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.ERROR then
-		log.warn("%s: query:get{%s, %u, %u, %u, %u}: provider hasn't info for this flight", func, unpack(req))
+		log.error("%s: provider hasn't info for `%s'", func, req_str)
 		return nil
 	end
 
 	local carrier, flight, day, month, year = unpack(req)
 	if correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.NEED_CB then
-		log.warn("%s: query:get{%s, %u, %u, %u, %u}: callbacks not set yet (old data is possible)",
-			 func, carrier, flight, day, month, year)
+		log.warn("%s: callbacks not set yet for `%s' (old data is possible)",
+			 func, req_str)
 	end
 
 	assert(correspond_req[QUERY_IDX.ID] ~= nil, 'id should be not nil here')
@@ -455,36 +454,39 @@ local function flyd_get(req, locale)
 
 	local departure_city, departure_airport_name
 	if record[FLIGHT_IDX.DEP_CODE] then
-		local dict = dictionary.iata2airport_info[record[FLIGHT_IDX.DEP_CODE]]
+		local idx = record[FLIGHT_IDX.DEP_CODE]
+		local dict = dictionary.iata2airport_info[idx]
 		if dict then
 			departure_city = dict.city[locale]
 			departure_airport_name = dict.name
 		end
 
 		if not departure_city then
-			log.warn("%s: can't find city for `%s' code", func, record[FLIGHT_IDX.DEP_CODE])
+			log.error("%s: can't find city for `%s' code", func, idx)
 		end
 	end
 
 	local arrival_city, arrival_airport_name
 	if record[FLIGHT_IDX.ARR_CODE] then
-		local dict = dictionary.iata2airport_info[record[FLIGHT_IDX.ARR_CODE]]
+		local idx = record[FLIGHT_IDX.ARR_CODE]
+		local dict = dictionary.iata2airport_info[idx]
 		if dict then
 			arrival_city = dict.city[locale]
 			arrival_airport_name = dict.name
 		end
 
 		if not arrival_city then
-			log.warn("%s: can't find city for `%s' code", func, record[FLIGHT_IDX.ARR_CODE])
+			log.error("%s: can't find city for `%s' code", func, idx)
 		end
 	end
 
 	local provider_name
 	if record[FLIGHT_IDX.CARRIER] then
-		provider_name = dictionary.iata2carrier_info[record[FLIGHT_IDX.CARRIER]]
+		local idx = record[FLIGHT_IDX.CARRIER]
+		provider_name = dictionary.iata2carrier_info[idx]
 
 		if not provider_name then
-			log.warn("%s: can't find provider name for `%s' code", func, record[FLIGHT_IDX.CARRIER])
+			log.error("%s: can't find provider name for `%s' code", func, idx)
 		end
 	end
 
@@ -702,7 +704,10 @@ end
 local function flyd_prepare_flight_record(id, fs)
 	local func = 'flyd_prepare_flight_record'
 
-	if not fs.carrierFsCode then
+	if type(fs) ~= 'table' then
+		log.error("%s: flight `%u': invalid response: `FlightStatus' must be table", func, id)
+		return nil
+	elseif not fs.carrierFsCode then
 		log.error("%s: flight `%u': invalid response: missed `carrierFsCode'", func, id)
 		return nil
 	elseif not fs.flightNumber then
@@ -861,7 +866,6 @@ end
 -- reservation_id, carrier, flight, day, month, year
 local function flyd_parse_request(request)
 	local func = 'flyd_parse_request'
-	local ok
 
 	if (type(request) ~= 'string') then
 		log.error("%s: invalid argument: expected string, but got `%s'", func, type(request))
@@ -985,7 +989,7 @@ end)
 -- Return value:
 --	table of pairs: { key, value(string or false) } for each key from request
 --		or empty table in case bad request
-
+local flyd_get_flight_info_json_req_id = 0
 function flyd_get_flight_info_json(locale, ...)
 	local func = 'flyd_get_flight_info_json'
 	list = {...}
@@ -1000,17 +1004,23 @@ function flyd_get_flight_info_json(locale, ...)
 		return {}
 	end
 
+	local req_id = flyd_get_flight_info_json_req_id
+	log.info("start `%s' (%d)", func, req_id)
+	flyd_get_flight_info_json_req_id = flyd_get_flight_info_json_req_id + 1
+
 	local resp = {}
 	for i = 1, #list do
 		local result = false
 
 		local ok, tuple = flyd_parse_request(list[i])
 		if ok then
-			result = json.encode(flyd_get(tuple, locale))
+			result = json.encode(flyd_get(tuple, list[i], locale))
 		end
 
 		table.insert(resp, { list[i], result })
 	end
+
+	log.info("end `%s' (%d)", func, req_id)
 
 	return resp
 end
@@ -1023,6 +1033,7 @@ end
 -- Return value:
 --	empty table in case bad request or
 --	table of booleans (`true' - valid request, `false' - otherwise)
+local flyd_new_flight_req_id = 0
 function flyd_new_flight(request)
 	local func = 'flyd_new_flight'
 
@@ -1030,6 +1041,10 @@ function flyd_new_flight(request)
 		log.error('%s: invalid argument: string expected, got: %s', func, type(list))
 		return {}
 	end
+
+	local req_id = flyd_new_flight_req_id
+	log.info("start `%s' (%d)", func, req_id)
+	flyd_new_flight_req_id = flyd_new_flight_req_id + 1
 
 	local resp = {}
 	for req in string.gmatch(request, '%S+') do
@@ -1041,6 +1056,8 @@ function flyd_new_flight(request)
 
 		table.insert(resp, ok)
 	end
+
+	log.info("end `%s', (%d)", func, req_id)
 
 	return resp
 end
