@@ -23,7 +23,7 @@ local flyd_config = string.format([[
 return {
 	box = {
 		listen = 3311,
-		log_level = 6, -- debug
+		log_level = 5, -- info
 		logger = '%s/flyd.log'
 	},
 

@@ -21,10 +21,12 @@ end
 --             Constants
 ---------------------------------------
 local FLYD_STATUS = {
-	ACTIVE	= 1,
-	NEED_CB	= 2,
-	DONE	= 3,
-	ERROR	= 4,
+	ACTIVE		= 1,
+	REGISTER_CB	= 2,
+	DONE		= 3,
+	ERROR		= 4,
+	RETRY		= 5,
+	RETRY_CB	= 6,
 }
 
 local QUERY_IDX = {
@@ -434,8 +436,9 @@ local function flyd_get(req, req_str, locale)
 	elseif not correspond_req then
 		log.error("%s: query `%s' not found", func, req_str)
 		return nil
-	elseif correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.ACTIVE then
-		log.error("%s: query `%s' is in progress", func, req_str)
+	elseif correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.ACTIVE or
+	       correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.RETRY then
+		log.error("%s: query `%s' is not complete yet", func, req_str)
 		return nil
 	elseif correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.ERROR then
 		log.error("%s: provider hasn't info for `%s'", func, req_str)
@@ -443,7 +446,8 @@ local function flyd_get(req, req_str, locale)
 	end
 
 	local carrier, flight, day, month, year = unpack(req)
-	if correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.NEED_CB then
+	if correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.REGISTER_CB or
+	   correspond_req[QUERY_IDX.STATUS] == FLYD_STATUS.RETRY_CB then
 		log.warn("%s: callbacks not set yet for `%s' (old data is possible)",
 			 func, req_str)
 	end
@@ -580,15 +584,16 @@ local function flyd_proxy_single_request(base_url, addr)
 		url = gamma_generate_url(base_url, addr)
 	end
 
-	log.debug("%s: try `%s/%s'", func, addr, base_url, url)
+	log.warn("%s: make new request: `%s' (%s)", func, url, base_url)
 
 	local resp = client.get(url)
 	if resp.status == 200 then
 		return resp
 	end
 
-	log.error("%s: http response for `%s': got status `%d' instead of `200'",
-		  func, url, resp.status)
+	-- Normally this shouldn't happend
+	log.error("%s: ALERT!!!: http response for `%s': got status `%d' instead of `200', body: `%s'",
+		  func, url, resp.status, resp.body)
 
 	return nil
 end
@@ -646,10 +651,16 @@ local function flyd_register_callbacks(id, flight, addr)
 		assert(flight ~= nil, 'flight should exist here')
 	end
 
+	local key = { flight[FLIGHT_IDX.CARRIER], tonumber(flight[FLIGHT_IDX.FLIGHT]),
+		      tonumber(day), tonumber(month), tonumber(year) }
+
 	local date = flight[FLIGHT_IDX.DEP_DATE];
 	local year, month, day = string.match(date, "^(%d+)-(%d+)-(%d+)")
 	if not year then
+		-- Don't mark request as error, because we just can't register callback
+		query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.DONE}})
 		log.error("%s: can't parse date `%s'", func, date)
+
 		return true -- to remove from queue
 	end
 	assert(year ~= nil and month ~= nil and day ~= nil)
@@ -657,6 +668,7 @@ local function flyd_register_callbacks(id, flight, addr)
 	local uid, cb = flyd_prepare_callback(flight)
 	if not uid then
 		-- something bad with db (retry later)
+		query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.RETRY_CB}})
 		return false
 	end
 	assert(cb ~= nil)
@@ -669,14 +681,16 @@ local function flyd_register_callbacks(id, flight, addr)
 
 	local resp = flyd_http_request(base_url, addr)
 	if not resp then
-		-- assume that this is temporary error and try later
+		query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.DONE}})
 		callbacks:delete(uid)
+
 		return false
 	end
 
 	local ok, json = pcall(json.decode, resp.body)
 	if not ok then
 		log.error("%s: can't decode (callbacks): `%s'", func, json)
+		query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.DONE}})
 		callbacks:delete(uid)
 
 		return true -- to remove from queue
@@ -684,6 +698,7 @@ local function flyd_register_callbacks(id, flight, addr)
 
 	if json.error then
 		log.error("%s: got error `%u': %s", func, json.error.httpStatusCode, json.error.errorMessage)
+		query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.DONE}})
 		callbacks:delete(uid)
 
 		return true
@@ -691,8 +706,6 @@ local function flyd_register_callbacks(id, flight, addr)
 
 	log.debug("%s: got json response: `%s'", func, resp.body)
 
-	local key = { flight[FLIGHT_IDX.CARRIER], tonumber(flight[FLIGHT_IDX.FLIGHT]),
-		      tonumber(day), tonumber(month), tonumber(year) }
 	local upd = query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.DONE}})
 	assert(upd, 'update should be successfull')
 
@@ -750,14 +763,17 @@ end
 local function flyd_process_response(req, resp, addr)
 	local func = 'flyd_process_response'
 
-	local ok, json = pcall(json.decode, resp.body)
-	if not ok then
-		log.error("%s: can't decode: `%s'", func, json)
-		return true -- to remove from queue
-	end
-
 	local key = { req[QUERY_IDX.CARRIER], req[QUERY_IDX.FLIGHT],
 		      req[QUERY_IDX.DAY], req[QUERY_IDX.MONTH], req[QUERY_IDX.YEAR] }
+
+	local ok, json = pcall(json.decode, resp.body)
+	if not ok then
+		local upd = query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.ERROR}})
+		assert(upd, 'update should be successfull')
+		log.error("%s: can't decode: `%s'", func, json)
+
+		return true -- to remove from queue
+	end
 
 	if json.error then
 		local upd = query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.ERROR}})
@@ -770,6 +786,8 @@ local function flyd_process_response(req, resp, addr)
 
 	log.debug("%s: got json response: `%s'", func, resp.body)
 	if not json.flightStatuses or type(json.flightStatuses) ~= 'table' then
+		query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.ERROR}})
+
 		log.error("%s: got invalid json: `flightStatuses' is not table", func)
 		return true
 	end
@@ -788,11 +806,15 @@ local function flyd_process_response(req, resp, addr)
 
 	local ok, new = pcall(flights.auto_increment, flights, rec2ins)
 	if not ok then
+		local upd = query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.RETRY}})
+		assert(upd, 'update should be successfull')
+
 		log.error("%s: can't insert flight info: %s", func, new)
+
 		return true
 	end
 
-	local upd = query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.NEED_CB}, {'!', -1, new[1]}})
+	local upd = query:update(key, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.REGISTER_CB}, {'!', -1, new[1]}})
 	assert(upd, 'update should be successfull')
 
 	log.debug("%s: flight {%s,%u,%u,%u,%u}: has been stored", func, unpack(key))
@@ -801,7 +823,11 @@ local function flyd_process_response(req, resp, addr)
 end
 
 local function flyd_request_do(req)
-	assert(req[QUERY_IDX.STATUS] == FLYD_STATUS.ACTIVE)
+	if req[QUERY_IDX.STATUS] ~= FLYD_STATUS.ACTIVE then
+		assert(req[QUERY_IDX.STATUS] == FLYD_STATUS.RETRY)
+		req = query:update(req, {{'=', QUERY_IDX.STATUS, FLYD_STATUS.ACTIVE}})
+		assert(req ~= nil, 'update should be successfull')
+	end
 
 	local base_url = "api.flightstats.com/flex/flightstatus/rest/v2/json/flight/status"
 	base_url = string.format("%s/%s/%u/dep/%u/%02u/%02u?utc=false", base_url,
@@ -811,7 +837,8 @@ local function flyd_request_do(req)
 
 	resp, addr = flyd_http_request(base_url)
 	if not resp then
-		return false
+		-- Don't retry requests in case http errors
+		return true
 	end
 
 	return flyd_process_response(req, resp, addr)
@@ -819,8 +846,9 @@ end
 
 local function flyd_process_request(req)
 	local func = 'flyd_process_request'
+	local req_str = table.concat(req, '|')
 
-	-- XXX: remove unneede `reservation_id'
+	-- XXX: remove unneeded `reservation_id'
 	-- (do it here just to simplify clients code)
 	table.remove(req, 1)
 
@@ -838,15 +866,18 @@ local function flyd_process_request(req)
 		local status = record[QUERY_IDX.STATUS]
 
 		if status == FLYD_STATUS.DONE or status == FLYD_STATUS.ERROR then
-			log.debug("%s: request {%s,%u,%u,%u,%u} already processed", func, unpack(req))
+			log.info("%s: request `%s' already processed", func, req_str)
 			return true
-		elseif status == FLYD_STATUS.ACTIVE then
-			log.debug("%s: request {%s,%u,%u,%u,%u}: retry all", func, unpack(req))
+		elseif status == FLYD_STATUS.ACTIVE or status == FLYD_STATUS.REGISTER_CB then
+			log.info("%s: request `%s': is inprogress now", func, req_str)
+			return true
+		elseif status == FLYD_STATUS.RETRY then
+			log.info("%s: request `%s': retry all", func, req_str)
 			return flyd_request_do(record)
 		end
 
-		assert(status == FLYD_STATUS.NEED_CB)
-		log.debug("%s: request {%s,%u,%u,%u,%u}: retry register callbacks", func, unpack(req))
+		assert(status == FLYD_STATUS.RETRY_CB)
+		log.info("%s: request `%s': retry register callbacks", func, req_str)
 
 		return flyd_register_callbacks(record[QUERY_IDX.ID])
 	end
@@ -857,8 +888,6 @@ local function flyd_process_request(req)
 		log.error("%s: can't insert query: %s", func, descr)
 		return true -- invalid request, remove from queue
 	end
-
-	log.warn("%s: make new request {%s,%u,%u,%u,%u}", func, unpack(req))
 
 	return flyd_request_do(descr)
 end
@@ -896,13 +925,13 @@ end
 
 if not config.dep_delay_delta then
 	config.dep_delay_delta = 5
-	log.info("config.dep_delay_delta misset, set to default: %u",
+	log.info("config.dep_delay_delta missed, set to default: %u",
 		 config.dep_delay_delta)
 end
 
 if not config.retry_timeout then
 	config.retry_timeout = 60
-	log.info("config.retry_timeout misset, set to default: %u",
+	log.info("config.retry_timeout missed, set to default: %u",
 		 config.retry_timeout)
 end
 
@@ -966,9 +995,14 @@ fiber.create(function ()
 		assert(task ~= nil, "`task' shouldn't be `nil' here")
 
 		local id, data = task[1], task[3]
-		if flyd_process_request(data) then
+
+		local ok, ret = pcall(flyd_process_request, data)
+		if not ok then
+			queue.tube.requests:delete(id)
+			log.error("ALERT: task `%d' can't be completed: `%s'", id, ret)
+		elseif ret then
 			queue.tube.requests:ack(id)
-			log.info("Task `%d' completed", id)
+			log.debug("Task `%d' completed", id)
 		else
 			queue.tube.requests:release(id, { delay = config.retry_timeout })
 			log.warn("Task `%d' failed, delay it", id)
@@ -1046,6 +1080,13 @@ function flyd_new_flight(request)
 	log.info("start `%s' (%d)", func, req_id)
 	flyd_new_flight_req_id = flyd_new_flight_req_id + 1
 
+	local stat = queue.statistics('requests')
+	if stat ~= nil then
+		local tasks_stat = stat.tasks
+		log.info("requests queue statistics: ready: `%d', delayed: `%d', total: `%d', done: `%d'",
+			 tasks_stat.ready, tasks_stat.delayed, tasks_stat.total, tasks_stat.done)
+	end
+
 	local resp = {}
 	for req in string.gmatch(request, '%S+') do
 		local ok, tuple = flyd_parse_request(req)
@@ -1057,7 +1098,7 @@ function flyd_new_flight(request)
 		table.insert(resp, ok)
 	end
 
-	log.info("end `%s', (%d)", func, req_id)
+	log.info("end `%s' (%d)", func, req_id)
 
 	return resp
 end
