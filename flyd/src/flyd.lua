@@ -985,6 +985,8 @@ httpd:route({ name = 'root', path = '/:key' }, flyd_new_notify_cb)
 httpd:start()
 
 -- Initialize queue
+queue.start();
+
 if not queue.tube.requests then
 	queue.create_tube('requests', 'fifottl')
 end
