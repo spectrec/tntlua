@@ -80,6 +80,8 @@ local function initialize_test()
 
 	-- install flyd
 	os.execute(string.format("cp %s %s/instance/%s", 'src/flyd.lua', flyd_tmp_dir, 'flyd.lua'))
+	os.execute(string.format("sed -i -e '/NOT_NEED_FOR_TESTS/,/NOT_NEED_FOR_TESTS/d;' %s/instance/%s", flyd_tmp_dir, 'flyd.lua'));
+	os.execute(string.format("sed -i -e '/NEED_FOR_TESTS/d;' %s/instance/%s", flyd_tmp_dir, 'flyd.lua'));
 	os.execute(string.format("cp %s %s/%s", 'src/dictionary.lua', flyd_tmp_dir, 'dictionary.lua'))
 
 	-- install httpd

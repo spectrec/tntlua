@@ -916,12 +916,14 @@ end
 ---------------------------------------
 --             Configuration
 ---------------------------------------
+--[[ NEED_FOR_TESTS
 config = assert(loadfile(path2config))()
 box.cfg(config.box)
 
 if config.console then
 	console.listen(config.console)
 end
+-- NEED_FOR_TESTS ]]
 
 if not config.dep_delay_delta then
 	config.dep_delay_delta = 5
@@ -950,36 +952,47 @@ dictionary = assert(loadfile(config.path_to_iata_codes))()
 ---------------------------------------
 --             Initialization
 ---------------------------------------
+-- NOT_NEED_FOR_TESTS
+function init_storage ()
+-- NOT_NEED_FOR_TESTS
+	-- Assume, that user hasn't `execute' permission by default
+	if not box.schema.role.exists('flyd_client_role') then
+		box.schema.role.create('flyd_client_role')
+		box.schema.role.grant('flyd_client_role', 'read,write,execute', 'universe')
+		box.schema.user.grant('guest', 'execute', 'role', 'flyd_client_role')
+	end
 
--- Assume, that user hasn't `execute' permission by default
-if not box.schema.role.exists('flyd_client_role') then
-	box.schema.role.create('flyd_client_role')
-	box.schema.role.grant('flyd_client_role', 'read,write,execute', 'universe')
-	box.schema.user.grant('guest', 'execute', 'role', 'flyd_client_role')
-end
+	-- Initialize spaces
+	query = box.space.query
+	if not query then
+		query = box.schema.space.create('query')
+		query:create_index('primary', {
+			-- carrier iata code, flight num, day, month, year
+			parts = {1, 'STR', 2, 'NUM', 3, 'NUM', 4, 'NUM', 5, 'NUM' }
+		})
+	end
 
--- Initialize spaces
-query = box.space.query
-if not query then
-	query = box.schema.space.create('query')
-	query:create_index('primary', {
-		-- carrier iata code, flight num, day, month, year
-		parts = {1, 'STR', 2, 'NUM', 3, 'NUM', 4, 'NUM', 5, 'NUM' }
-	})
-end
+	flights = box.space.flights
+	if not flights then
+		flights = box.schema.space.create('flights')
+		-- `TREE' is used instead of `HASH' just for autoincrement
+		flights:create_index('primary', { parts = {1, 'NUM'} })
+	end
 
-flights = box.space.flights
-if not flights then
-	flights = box.schema.space.create('flights')
-	-- `TREE' is used instead of `HASH' just for autoincrement
-	flights:create_index('primary', { parts = {1, 'NUM'} })
-end
+	callbacks = box.space.callbacks
+	if not callbacks then
+		callbacks = box.schema.space.create('callbacks')
+		callbacks:create_index('primary', { type = 'HASH', parts = {1, 'STR'} })
+	end
 
-callbacks = box.space.callbacks
-if not callbacks then
-	callbacks = box.schema.space.create('callbacks')
-	callbacks:create_index('primary', { type = 'HASH', parts = {1, 'STR'} })
+	-- Initialize queue
+	queue.start();
+	if not queue.tube[requests_queue] then
+		queue.create_tube(requests_queue, 'fifottl')
+	end
+-- NOT_NEED_FOR_TESTS
 end
+-- NOT_NEED_FOR_TESTS
 
 -- Initialize http server
 httpd = require('http.server').new(config.http_server.host, config.http_server.port, {
@@ -989,13 +1002,6 @@ httpd = require('http.server').new(config.http_server.host, config.http_server.p
 
 httpd:route({ name = 'root', path = '/:key' }, flyd_new_notify_cb)
 httpd:start()
-
--- Initialize queue
-queue.start();
-
-if not queue.tube[requests_queue] then
-	queue.create_tube(requests_queue, 'fifottl')
-end
 
 fiber.create(function ()
 	while true do
