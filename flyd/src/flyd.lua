@@ -935,6 +935,12 @@ if not config.retry_timeout then
 		 config.retry_timeout)
 end
 
+if not config.queue_name then
+	log.error("config: missed `queue_name' parameter");
+	os.exit(1);
+end
+requests_queue = config.queue_name
+
 if not config.path_to_iata_codes then
 	log.error("config: missed `path_to_iata_codes' parameter")
 	os.exit(1)
@@ -987,26 +993,26 @@ httpd:start()
 -- Initialize queue
 queue.start();
 
-if not queue.tube.requests then
-	queue.create_tube('requests', 'fifottl')
+if not queue.tube[requests_queue] then
+	queue.create_tube(requests_queue, 'fifottl')
 end
 
 fiber.create(function ()
 	while true do
-		local task = queue.tube.requests:take()
+		local task = queue.tube[requests_queue]:take()
 		assert(task ~= nil, "`task' shouldn't be `nil' here")
 
 		local id, data = task[1], task[3]
 
 		local ok, ret = pcall(flyd_process_request, data)
 		if not ok then
-			queue.tube.requests:delete(id)
+			queue.tube[requests_queue]:delete(id)
 			log.error("ALERT: task `%d' can't be completed: `%s'", id, ret)
 		elseif ret then
-			queue.tube.requests:ack(id)
+			queue.tube[requests_queue]:ack(id)
 			log.debug("Task `%d' completed", id)
 		else
-			queue.tube.requests:release(id, { delay = config.retry_timeout })
+			queue.tube[requests_queue]:release(id, { delay = config.retry_timeout })
 			log.warn("Task `%d' failed, delay it", id)
 		end
 	end
@@ -1082,7 +1088,7 @@ function flyd_new_flight(request)
 	log.info("start `%s' (%d)", func, req_id)
 	flyd_new_flight_req_id = flyd_new_flight_req_id + 1
 
-	local stat = queue.statistics('requests')
+	local stat = queue.statistics(requests_queue)
 	if stat ~= nil then
 		local tasks_stat = stat.tasks
 		log.info("requests queue statistics: ready: `%d', delayed: `%d', total: `%d', done: `%d'",
@@ -1093,7 +1099,7 @@ function flyd_new_flight(request)
 	for req in string.gmatch(request, '%S+') do
 		local ok, tuple = flyd_parse_request(req)
 		if ok then
-			local task = queue.tube.requests:put(tuple)
+			local task = queue.tube[requests_queue]:put(tuple)
 			log.debug("%s: append task: `%d'", func, task[1])
 		end
 

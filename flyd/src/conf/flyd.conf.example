@@ -12,6 +12,8 @@ return {
 		port = 8080
 	},
 
+	queue_name = 'req_queue_name',
+
 	console = '127.0.0.1:3312',
 
 	use_gamma_url = true,

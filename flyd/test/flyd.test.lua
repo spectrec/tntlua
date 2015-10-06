@@ -37,6 +37,8 @@ return {
 	},
 	callback_host = '127.0.0.1:8080',
 
+	queue_name = 'req_queue',
+
 	path_to_iata_codes = '%s/dictionary.lua',
 	dep_delay_delta = 5,
 	retry_timeout = 60,
