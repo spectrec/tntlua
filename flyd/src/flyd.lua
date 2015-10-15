@@ -398,6 +398,10 @@ local function flyd_new_notify_cb(req)
 	local key = req:stash('key')
 	assert(key ~= nil)
 
+	if req.method == 'GET' and req.path == '/alive' then
+		return { status = 200, body = 'ok' }
+	end
+
 	if req.method ~= 'POST' then
 		log.error("%s: got invalid request (method: `%s', key: `%s')", func, req.method, key)
 		return { status = 405 } -- method not allowed
