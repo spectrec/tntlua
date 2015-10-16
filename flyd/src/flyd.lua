@@ -1006,6 +1006,7 @@ httpd = require('http.server').new(config.http_server.host, config.http_server.p
 
 httpd:route({ name = 'root', path = '/:key' }, flyd_new_notify_cb)
 httpd:start()
+queue.start()
 
 fiber.create(function ()
 	while true do
