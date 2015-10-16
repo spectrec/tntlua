@@ -988,12 +988,6 @@ function init_storage ()
 		callbacks = box.schema.space.create('callbacks')
 		callbacks:create_index('primary', { type = 'HASH', parts = {1, 'STR'} })
 	end
-
-	-- Initialize queue
-	queue.start();
-	if not queue.tube[requests_queue] then
-		queue.create_tube(requests_queue, 'fifottl')
-	end
 -- NOT_NEED_FOR_TESTS
 end
 -- NOT_NEED_FOR_TESTS
@@ -1006,7 +1000,12 @@ httpd = require('http.server').new(config.http_server.host, config.http_server.p
 
 httpd:route({ name = 'root', path = '/:key' }, flyd_new_notify_cb)
 httpd:start()
-queue.start()
+
+-- Initialize queue
+queue.start();
+if not queue.tube[requests_queue] then
+	queue.create_tube(requests_queue, 'fifottl')
+end
 
 fiber.create(function ()
 	while true do
