@@ -5,7 +5,7 @@ local http = require('http.client')
 local fiber = require('fiber')
 local net_box = require('net.box')
 
-local user = arg[1]
+local home = arg[1]
 local flyd_tmp_dir = '/tmp/flyd'
 local config = string.format([[
 default_cfg = {
@@ -47,11 +47,11 @@ return {
 
 local function initialize_test()
 	os.execute('rm -rf ' .. flyd_tmp_dir)
-	os.execute(string.format('mkdir -p /home/%s/.config/tarantool', user))
+	os.execute(string.format('mkdir -p %s/.config/tarantool', home))
 	os.execute(string.format("mkdir -p %s/%s", flyd_tmp_dir, 'instance'))
 
 	-- prepare config file (for tarantool)
-	local f, err = io.open(string.format('/home/%s/.config/tarantool/tarantool', user), 'w')
+	local f, err = io.open(string.format('%s/.config/tarantool/tarantool', home), 'w')
 	if not f then
 		print(string.format("open failed: %s", err))
 		os.exit(1)

@@ -12,7 +12,7 @@ install:
 	install -p -m 644 src/conf/flyd.conf.example ${DESTDIR}/usr/local/etc/flyd
 
 test:
-	tarantool test/flyd.test.lua `whoami` | tee ${TEST_OUT}
+	tarantool test/flyd.test.lua $$HOME | tee ${TEST_OUT}
 	@[[ `grep -cP '^\s+not ok' ${TEST_OUT}` == 0 ]]
 
 .PHONY: test
